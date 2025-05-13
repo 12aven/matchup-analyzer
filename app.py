@@ -86,66 +86,6 @@ def get_team_schedule(team_id=146):
         st.error(f"Error loading schedule: {str(e)}")
         return pd.DataFrame()
 
-def get_head_to_head_stats(batter_id, pitcher_id, days=365):
-    """Get head-to-head stats between batter and pitcher"""
-    try:
-        end_date = datetime.now().strftime('%Y-%m-%d')
-        start_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
-        
-        # Get all plate appearances between this batter and pitcher
-        df = statcast_batter(start_date, end_date, batter_id)
-        if df is None or df.empty:
-            return {}
-            
-        # Filter for plate appearances against this pitcher
-        df = df[df['pitcher'] == pitcher_id].copy()
-        
-        if df.empty:
-            return {}
-            
-        # Calculate stats
-        stats = {
-            'pa': len(df['at_bat_number'].unique()),
-            'ab': len(df[~df['events'].isin(['walk', 'hit_by_pitch', 'sac_fly', 'sac_bunt'])]),
-            'hits': len(df[df['events'].isin(['single', 'double', 'triple', 'home_run'])]),
-            'hr': len(df[df['events'] == 'home_run']),
-            'rbi': df['post_bat_score'] - df['bat_score'],
-            'bb': len(df[df['events'].isin(['walk', 'intent_walk'])]),
-            'so': len(df[df['events'] == 'strikeout']),
-            'avg': 0.0,
-            'obp': 0.0,
-            'slg': 0.0,
-            'ops': 0.0
-        }
-        
-        # Calculate averages
-        if stats['ab'] > 0:
-            stats['avg'] = round(stats['hits'] / stats['ab'], 3)
-            
-        # Calculate OBP (H + BB + HBP) / (AB + BB + HBP + SF)
-        obp_num = stats['hits'] + stats['bb']
-        obp_denom = stats['ab'] + stats['bb']
-        if obp_denom > 0:
-            stats['obp'] = round(obp_num / obp_denom, 3)
-            
-        # Calculate SLG (1B + 2*2B + 3*3B + 4*HR) / AB
-        singles = len(df[df['events'] == 'single'])
-        doubles = len(df[df['events'] == 'double'])
-        triples = len(df[df['events'] == 'triple'])
-        hr = stats['hr']
-        
-        if stats['ab'] > 0:
-            stats['slg'] = round((singles + 2*doubles + 3*triples + 4*hr) / stats['ab'], 3)
-            
-        # Calculate OPS
-        stats['ops'] = round(stats['obp'] + stats['slg'], 3)
-        
-        return stats
-        
-    except Exception as e:
-        print(f"Error in get_head_to_head_stats: {str(e)}")
-        return {}
-
 def get_batter_stats(player_id, days=30):
     """Get batter stats for last N days using statcast data"""
     try:
@@ -462,64 +402,6 @@ def get_platoon_splits(player_id: int, is_batter: bool = True, days: int = 365) 
     
     return pd.DataFrame(splits)
 
-def get_pitch_type_performance(batter_id: int, pitcher_id: int, days: int = 365) -> pd.DataFrame:
-    """Get batter's performance against different pitch types"""
-    end_date = datetime.now().strftime('%Y-%m-%d')
-    start_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
-    
-    # Get batter's performance
-    df = statcast_batter(start_date, end_date, batter_id)
-    if df.empty:
-        return pd.DataFrame()
-    
-    # Filter for only this pitcher if specified
-    if pitcher_id:
-        df = df[df['pitcher'] == pitcher_id]
-    
-    # Group by pitch type
-    pitch_stats = []
-    for pitch_type in df['pitch_type'].dropna().unique():
-        pitch_df = df[df['pitch_type'] == pitch_type]
-        pitch_stats.append({
-            'pitch_type': pitch_type,
-            'count': len(pitch_df),
-            'swing': len(pitch_df[pitch_df['description'].str.contains('swing', na=False)]),
-            'whiff': len(pitch_df[pitch_df['description'].str.contains('swinging_strike', na=False)]),
-            'xBA': pitch_df['estimated_ba_using_speedangle'].mean(),
-            'xwOBA': pitch_df['estimated_woba_using_speedangle'].mean(),
-            'exit_velocity': pitch_df['launch_speed'].mean(),
-            'launch_angle': pitch_df['launch_angle'].mean()
-        })
-    
-    return pd.DataFrame(pitch_stats)
-
-def get_clutch_stats(player_id: int, is_batter: bool = True, days: int = 365) -> Dict:
-    """Get clutch stats (RISP) for a player"""
-    end_date = datetime.now().strftime('%Y-%m-%d')
-    start_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
-    
-    if is_batter:
-        df = statcast_batter(start_date, end_date, player_id)
-    else:
-        df = statcast_pitcher(start_date, end_date, player_id)
-    
-    if df.empty:
-        return {}
-    
-    # Filter for RISP situations
-    risp_df = df[(df['on_3b'].notna()) | (df['on_2b'].notna())]
-    
-    # Calculate overall stats
-    overall_stats = calculate_advanced_stats(df)
-    risp_stats = calculate_advanced_stats(risp_df)
-    
-    return {
-        'overall': overall_stats,
-        'risp': risp_stats,
-        'difference': {k: risp_stats.get(k, 0) - overall_stats.get(k, 0) 
-                      for k in set(overall_stats) | set(risp_stats)}
-    }
-
 def get_batted_ball_profile(player_id: int, is_batter: bool = True, days: int = 365) -> Dict:
     """Get batted ball profile (GB%, LD%, FB%)"""
     end_date = datetime.now().strftime('%Y-%m-%d')
@@ -561,7 +443,7 @@ def main():
     st.title("⚾ Marlins Matchup Analyzer")
     
     # Sidebar
-    st.sidebar.header("Game Selection")
+    st.sidebar.header("Player Selection")
     
     # Date range selector
     days = st.sidebar.slider("Date Range (days)", 7, 365, 30, 7,
@@ -584,13 +466,12 @@ def main():
         batters = roster[roster['position'] != 'Pitcher']
         pitchers = roster[roster['position'] == 'Pitcher']
         
-        # Batter selection
+        # Player selection
         selected_batter = st.sidebar.selectbox(
             "Select Batter",
             batters['fullName'].sort_values().tolist()
         )
         
-        # Pitcher selection
         selected_pitcher = st.sidebar.selectbox(
             "Select Pitcher",
             pitchers['fullName'].sort_values().tolist()
@@ -605,18 +486,73 @@ def main():
         return
     
     # Create tabs for different sections
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
-        "Overview", 
+    tab1, tab2, tab3 = st.tabs([
+        "Recent Performance", 
         "Platoon Splits", 
-        "Pitch Type Analysis", 
-        "Clutch Performance", 
         "Batted Ball Profile"
     ])
     
     with tab1:
-        # Your existing overview content here
-        st.header(f"{selected_batter} vs {selected_pitcher}")
-        # ... rest of your existing overview content ...
+        # Recent Performance
+        st.header(f"Recent Performance (Last {days} Days)")
+        
+        # Batter's recent performance
+        st.markdown(f"### {selected_batter} - Batter")
+        try:
+            batter_stats = get_batter_stats(batter_id, days=days)
+            if not batter_stats.empty:
+                # Calculate metrics using the correct column names
+                batter_stats['gameDate'] = pd.to_datetime(batter_stats['gameDate']).dt.strftime('%Y-%m-%d')
+                
+                # Create a line chart for batter's performance
+                fig = px.line(batter_stats, x='gameDate', y='hits', 
+                            title=f"{selected_batter} - Hits by Game")
+                st.plotly_chart(fig)
+                
+                # Show detailed stats
+                st.dataframe(batter_stats[['gameDate', 'atBats', 'hits', 'homeRuns', 'strikeOuts', 'baseOnBalls']]
+                            .rename(columns={
+                                'gameDate': 'Game Date',
+                                'atBats': 'AB',
+                                'hits': 'H',
+                                'homeRuns': 'HR',
+                                'strikeOuts': 'SO',
+                                'baseOnBalls': 'BB'
+                            }))
+            else:
+                st.warning("No recent batting data available.")
+        except Exception as e:
+            st.error(f"Error loading batter stats: {str(e)}")
+        
+        # Pitcher's recent performance
+        st.markdown(f"### {selected_pitcher} - Pitcher")
+        try:
+            pitcher_stats = get_pitcher_stats(pitcher_id, days=days)
+            if not pitcher_stats.empty:
+                # Calculate metrics using the correct column names
+                pitcher_stats['gameDate'] = pd.to_datetime(pitcher_stats['gameDate']).dt.strftime('%Y-%m-%d')
+                
+                # Create a line chart for pitcher's performance
+                fig = px.line(pitcher_stats, x='gameDate', y='strikeOuts', 
+                            title=f"{selected_pitcher} - Strikeouts by Game")
+                st.plotly_chart(fig)
+                
+                # Show detailed stats
+                st.dataframe(pitcher_stats[['gameDate', 'battersFaced', 'hits', 'homeRuns', 'strikeOuts', 'baseOnBalls', 'totalPitches', 'inningsPitched']]
+                            .rename(columns={
+                                'gameDate': 'Game Date',
+                                'battersFaced': 'BF',
+                                'hits': 'H',
+                                'homeRuns': 'HR',
+                                'strikeOuts': 'SO',
+                                'baseOnBalls': 'BB',
+                                'totalPitches': 'Pitches',
+                                'inningsPitched': 'IP'
+                            }))
+            else:
+                st.warning("No recent pitching data available.")
+        except Exception as e:
+            st.error(f"Error loading pitcher stats: {str(e)}")
     
     with tab2:
         # Platoon Splits
@@ -641,50 +577,6 @@ def main():
                 st.warning("No platoon split data available for pitcher.")
     
     with tab3:
-        # Pitch Type Analysis
-        st.header("Pitch Type Analysis")
-        st.subheader(f"{selected_batter} vs. {selected_pitcher}")
-        
-        pitch_stats = get_pitch_type_performance(batter_id, pitcher_id, days=days)
-        if not pitch_stats.empty:
-            # Create radar chart
-            fig = px.line_polar(
-                pitch_stats, 
-                r='xwOBA', 
-                theta='pitch_type',
-                line_close=True,
-                title="xwOBA by Pitch Type"
-            )
-            st.plotly_chart(fig)
-            
-            # Show detailed stats
-            st.dataframe(pitch_stats)
-        else:
-            st.warning("No pitch type data available for this matchup.")
-    
-    with tab4:
-        # Clutch Performance
-        st.header("Clutch Performance")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.subheader(f"{selected_batter} - RISP Performance")
-            batter_clutch = get_clutch_stats(batter_id, is_batter=True, days=days)
-            if batter_clutch:
-                st.dataframe(pd.DataFrame(batter_clutch))
-            else:
-                st.warning("No clutch data available for batter.")
-        
-        with col2:
-            st.subheader(f"{selected_pitcher} - RISP Performance")
-            pitcher_clutch = get_clutch_stats(pitcher_id, is_batter=False, days=days)
-            if pitcher_clutch:
-                st.dataframe(pd.DataFrame(pitcher_clutch))
-            else:
-                st.warning("No clutch data available for pitcher.")
-    
-    with tab5:
         # Batted Ball Profile
         st.header("Batted Ball Profile")
         
