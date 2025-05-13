@@ -501,24 +501,116 @@ def main():
         try:
             batter_stats = get_batter_stats(batter_id, days=days)
             if not batter_stats.empty:
-                # Calculate metrics using the correct column names
-                batter_stats['gameDate'] = pd.to_datetime(batter_stats['gameDate']).dt.strftime('%Y-%m-%d')
+                batter_stats = batter_stats.sort_values('gameDate')
                 
-                # Create a line chart for batter's performance
-                fig = px.line(batter_stats, x='gameDate', y='hits', 
-                            title=f"{selected_batter} - Hits by Game")
-                st.plotly_chart(fig)
+                # Calculate rolling 5-game averages
+                rolling_window = min(5, len(batter_stats))
+                if rolling_window > 1:
+                    batter_stats['rolling_avg'] = batter_stats['hits'] / batter_stats['atBats']
+                    batter_stats['rolling_avg'] = batter_stats['rolling_avg'].rolling(window=rolling_window, min_periods=1).mean()
                 
-                # Show detailed stats
-                st.dataframe(batter_stats[['gameDate', 'atBats', 'hits', 'homeRuns', 'strikeOuts', 'baseOnBalls']]
-                            .rename(columns={
-                                'gameDate': 'Game Date',
-                                'atBats': 'AB',
-                                'hits': 'H',
-                                'homeRuns': 'HR',
-                                'strikeOuts': 'SO',
-                                'baseOnBalls': 'BB'
-                            }))
+                # Create columns for metrics
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("AVG", f"{(batter_stats['hits'].sum() / batter_stats['atBats'].sum()):.3f}")
+                with col2:
+                    obp_numerator = batter_stats['hits'].sum() + batter_stats['baseOnBalls'].sum()
+                    obp_denominator = (batter_stats['atBats'].sum() + 
+                                      batter_stats['baseOnBalls'].sum() + 
+                                      (batter_stats['sacFlies'].sum() if 'sacFlies' in batter_stats.columns else 0))
+                    obp = obp_numerator / obp_denominator if obp_denominator > 0 else 0
+                    st.metric("OBP", f"{obp:.3f}")
+                with col3:
+                    try:
+                        if 'totalBases' in batter_stats.columns:
+                            slg = batter_stats['totalBases'].sum() / (batter_stats['atBats'].sum() or 1)
+                        else:
+                            # Initialize missing columns with 0 if they don't exist
+                            for col in ['doubles', 'triples', 'homeRuns']:
+                                if col not in batter_stats.columns:
+                                    batter_stats[col] = 0
+                            slg = (batter_stats['hits'].sum() + 
+                                 batter_stats['doubles'].sum() + 
+                                 batter_stats['triples'].sum() * 2 + 
+                                 batter_stats['homeRuns'].sum() * 3) / (batter_stats['atBats'].sum() or 1)
+                        st.metric("SLG", f"{slg:.3f}")
+                    except Exception as e:
+                        st.metric("SLG", "N/A")
+                        st.error(f"Error calculating SLG: {str(e)}")
+                with col4:
+                    last_5_avg = (batter_stats['hits'].tail(5).sum() / 
+                                 batter_stats['atBats'].tail(5).sum()) if len(batter_stats) >= 5 else 0
+                    st.metric("Last 5G AVG", f"{last_5_avg:.3f}")
+                
+                # Create tabs for different views
+                tab1a, tab1b = st.tabs(["Trends", "Game Log"])
+                
+                with tab1a:
+                    # Create a figure with secondary y-axis for rolling average
+                    fig = make_subplots(specs=[[{"secondary_y": True}]])
+                    
+                    # Add bar chart for hits
+                    fig.add_trace(
+                        go.Bar(
+                            x=batter_stats['gameDate'],
+                            y=batter_stats['hits'],
+                            name='Hits',
+                            marker_color='#1f77b4',
+                            opacity=0.6
+                        ),
+                        secondary_y=False
+                    )
+                    
+                    # Add line for rolling average if we have enough data
+                    if rolling_window > 1:
+                        fig.add_trace(
+                            go.Scatter(
+                                x=batter_stats['gameDate'],
+                                y=batter_stats['rolling_avg'] * 100,  # Scale for better visualization
+                                name=f'{rolling_window}-Game Avg',
+                                line=dict(color='#ff7f0e', width=3)
+                            ),
+                            secondary_y=True
+                        )
+                    
+                    # Update layout
+                    fig.update_layout(
+                        title=f"{selected_batter} - Hits & Batting Average (Last {days} Days)",
+                        xaxis_title="Game Date",
+                        yaxis_title="Hits",
+                        yaxis2=dict(
+                            title="Batting Avg (x100)",
+                            overlaying="y",
+                            side="right"
+                        ),
+                        showlegend=True,
+                        hovermode='x unified'
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+                
+                with tab1b:
+                    # Show detailed game log
+                    # Initialize any missing columns with 0
+                    for col in ['rbi', 'totalBases']:
+                        if col not in batter_stats.columns:
+                            batter_stats[col] = 0
+                    
+                    st.dataframe(
+                        batter_stats[['gameDate', 'atBats', 'hits', 'homeRuns', 'rbi', 
+                                     'strikeOuts', 'baseOnBalls', 'totalBases']]
+                        .rename(columns={
+                            'gameDate': 'Date',
+                            'atBats': 'AB',
+                            'hits': 'H',
+                            'homeRuns': 'HR',
+                            'rbi': 'RBI',
+                            'strikeOuts': 'SO',
+                            'baseOnBalls': 'BB',
+                            'totalBases': 'TB'
+                        }),
+                        use_container_width=True
+                    )
+                    
             else:
                 st.warning("No recent batting data available.")
         except Exception as e:
@@ -529,26 +621,115 @@ def main():
         try:
             pitcher_stats = get_pitcher_stats(pitcher_id, days=days)
             if not pitcher_stats.empty:
-                # Calculate metrics using the correct column names
-                pitcher_stats['gameDate'] = pd.to_datetime(pitcher_stats['gameDate']).dt.strftime('%Y-%m-%d')
+                pitcher_stats = pitcher_stats.sort_values('gameDate')
                 
-                # Create a line chart for pitcher's performance
-                fig = px.line(pitcher_stats, x='gameDate', y='strikeOuts', 
-                            title=f"{selected_pitcher} - Strikeouts by Game")
-                st.plotly_chart(fig)
+                # Initialize any missing columns with 0
+                for col in ['earnedRuns', 'strikeOuts', 'baseOnBalls', 'hits', 'homeRuns', 'totalPitches']:
+                    if col not in pitcher_stats.columns:
+                        pitcher_stats[col] = 0
                 
-                # Show detailed stats
-                st.dataframe(pitcher_stats[['gameDate', 'battersFaced', 'hits', 'homeRuns', 'strikeOuts', 'baseOnBalls', 'totalPitches', 'inningsPitched']]
-                            .rename(columns={
-                                'gameDate': 'Game Date',
-                                'battersFaced': 'BF',
-                                'hits': 'H',
-                                'homeRuns': 'HR',
-                                'strikeOuts': 'SO',
-                                'baseOnBalls': 'BB',
-                                'totalPitches': 'Pitches',
-                                'inningsPitched': 'IP'
-                            }))
+                # Calculate rolling 5-game ERA
+                rolling_window = min(5, len(pitcher_stats))
+                if rolling_window > 1:
+                    pitcher_stats['rolling_era'] = (pitcher_stats['earnedRuns'] * 9) / \
+                                                  (pitcher_stats['inningsPitched'] + 1e-6)
+                    pitcher_stats['rolling_era'] = pitcher_stats['rolling_era'].rolling(window=rolling_window, min_periods=1).mean()
+                
+                # Create columns for metrics
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    try:
+                        era = (pitcher_stats.get('earnedRuns', pd.Series([0])).sum() * 9) / (pitcher_stats['inningsPitched'].sum() or 1)
+                        st.metric("ERA", f"{era:.2f}")
+                    except Exception as e:
+                        st.metric("ERA", "N/A")
+                        st.error(f"Error calculating ERA: {str(e)}")
+                with col2:
+                    try:
+                        whip = (pitcher_stats['hits'].sum() + pitcher_stats['baseOnBalls'].sum()) / (pitcher_stats['inningsPitched'].sum() or 1)
+                        st.metric("WHIP", f"{whip:.2f}")
+                    except Exception as e:
+                        st.metric("WHIP", "N/A")
+                        st.error(f"Error calculating WHIP: {str(e)}")
+                with col3:
+                    k_per_9 = (pitcher_stats['strikeOuts'].sum() * 9) / (pitcher_stats['inningsPitched'].sum() or 1)
+                    st.metric("K/9", f"{k_per_9:.1f}")
+                with col4:
+                    try:
+                        last_5_era = 0
+                        if len(pitcher_stats) >= 5:
+                            earned_runs = pitcher_stats.get('earnedRuns', pd.Series([0] * len(pitcher_stats))).tail(5).sum()
+                            innings = pitcher_stats['inningsPitched'].tail(5).sum()
+                            last_5_era = (earned_runs * 9) / (innings or 1)
+                        st.metric("Last 5G ERA", f"{last_5_era:.2f}")
+                    except Exception as e:
+                        st.metric("Last 5G ERA", "N/A")
+                        st.error(f"Error calculating last 5G ERA: {str(e)}")
+                
+                # Create tabs for different views
+                tab2a, tab2b = st.tabs(["Trends", "Game Log"])
+                
+                with tab2a:
+                    # Create a figure with secondary y-axis for ERA
+                    fig = make_subplots(specs=[[{"secondary_y": True}]])
+                    
+                    # Add bar chart for strikeouts
+                    fig.add_trace(
+                        go.Bar(
+                            x=pitcher_stats['gameDate'],
+                            y=pitcher_stats['strikeOuts'],
+                            name='Strikeouts',
+                            marker_color='#d62728',
+                            opacity=0.6
+                        ),
+                        secondary_y=False
+                    )
+                    
+                    # Add line for rolling ERA if we have enough data
+                    if rolling_window > 1:
+                        fig.add_trace(
+                            go.Scatter(
+                                x=pitcher_stats['gameDate'],
+                                y=pitcher_stats['rolling_era'],
+                                name=f'{rolling_window}-Game ERA',
+                                line=dict(color='#2ca02c', width=3)
+                            ),
+                            secondary_y=True
+                        )
+                    
+                    # Update layout
+                    fig.update_layout(
+                        title=f"{selected_pitcher} - Strikeouts & ERA (Last {days} Days)",
+                        xaxis_title="Game Date",
+                        yaxis_title="Strikeouts",
+                        yaxis2=dict(
+                            title="ERA",
+                            overlaying="y",
+                            side="right"
+                        ),
+                        showlegend=True,
+                        hovermode='x unified'
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+                
+                with tab2b:
+                    # Show detailed game log
+                    st.dataframe(
+                        pitcher_stats[['gameDate', 'inningsPitched', 'hits', 'earnedRuns', 
+                                     'strikeOuts', 'baseOnBalls', 'homeRuns', 'totalPitches']]
+                        .rename(columns={
+                            'gameDate': 'Date',
+                            'inningsPitched': 'IP',
+                            'hits': 'H',
+                            'earnedRuns': 'ER',
+                            'strikeOuts': 'SO',
+                            'baseOnBalls': 'BB',
+                            'homeRuns': 'HR',
+                            'totalPitches': 'Pitches'
+                        }),
+                        use_container_width=True
+                    )
+                    
             else:
                 st.warning("No recent pitching data available.")
         except Exception as e:
